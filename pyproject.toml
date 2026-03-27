@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dvdplayer-python"
+version = "0.1.0"
+description = "Python port of RGB-Pi DVDPlayer"
+requires-python = ">=3.9"
+dependencies = [
+  "pygame>=2.1",
+  "requests>=2.28",
+]
+
+[project.scripts]
+dvdplayer-python = "dvdplayer_python.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

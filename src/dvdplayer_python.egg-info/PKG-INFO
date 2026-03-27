@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: dvdplayer-python
+Version: 0.1.0
+Summary: Python port of RGB-Pi DVDPlayer
+Requires-Python: >=3.9
+Requires-Dist: pygame>=2.1
+Requires-Dist: requests>=2.28
