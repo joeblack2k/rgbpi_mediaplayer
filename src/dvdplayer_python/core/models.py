@@ -23,6 +23,7 @@ class Screen(str, Enum):
     DVD_PICKER = "dvd_picker"
     PLEX_LINK = "plex_link"
     PLEX_CODE = "plex_code"
+    YOUTUBE_LINK = "youtube_link"
     KEYBOARD = "keyboard"
     CONFIRM = "confirm"
     PLAYBACK = "playback"
@@ -48,6 +49,7 @@ class PlaybackKind(str, Enum):
     DVD_ISO = "dvd_iso"
     OPTICAL_DRIVE = "optical_drive"
     PLEX_VIDEO = "plex_video"
+    YOUTUBE_VIDEO = "youtube_video"
 
 
 @dataclass
@@ -59,6 +61,9 @@ class PlaybackSource:
     authored_dvd: bool = False
     file_size: Optional[int] = None
     container: Optional[str] = None
+    hint_width: Optional[int] = None
+    hint_height: Optional[int] = None
+    hint_fps: Optional[float] = None
 
 
 @dataclass
@@ -117,6 +122,10 @@ class RuntimeSnapshot:
     playback_backend: Optional[str]
     playback_profile: Optional[str]
     playback_degraded: bool
+    youtube_link_state: str
+    youtube_screen_name: Optional[str]
+    youtube_queue_size: int
+    youtube_receiver_healthy: bool
     overlay_focus: Optional[int]
     overlay_items: List[str]
     active_tty: Optional[str]

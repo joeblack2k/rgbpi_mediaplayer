@@ -36,6 +36,13 @@ from dvdplayer_python.core.persistence import PlaybackStateStore, cleanup_stale_
 from dvdplayer_python.media.network_backend import NetworkBackend, make_saved_root
 from dvdplayer_python.media.plex_client import PlexClient
 from dvdplayer_python.media.scanner import scan_dvd_candidates, scan_local_items
+from dvdplayer_python.media.youtube_receiver import (
+    YOUTUBE_LINK_CODE_PENDING,
+    YOUTUBE_LINK_LINKED,
+    YOUTUBE_LINK_UNLINKED,
+    YouTubeReceiverManager,
+    resolve_youtube_stream,
+)
 from dvdplayer_python.playback.session import PlaybackSession
 from dvdplayer_python.ui.renderer import RenderModel, Renderer
 
@@ -91,7 +98,7 @@ KEYBOARD_SYMBOLS = "._-@"
 def start_menu_entries_for_source(source: Optional[PlaybackSource]) -> list[tuple[str, str]]:
     if source and source.kind == PlaybackKind.PLEX_VIDEO and not source.authored_dvd:
         return list(START_MENU_ENTRIES_PLEX)
-    if source and source.kind == PlaybackKind.VIDEO_FILE and not source.authored_dvd:
+    if source and source.kind in {PlaybackKind.VIDEO_FILE, PlaybackKind.YOUTUBE_VIDEO} and not source.authored_dvd:
         return list(START_MENU_ENTRIES_VIDEO)
     return list(START_MENU_ENTRIES_DVD)
 
@@ -122,6 +129,8 @@ class App:
         self.playback_state = PlaybackStateStore(self.state_dir)
         self.network = NetworkBackend(self.app_dir)
         self.plex = PlexClient(self.state_dir)
+        self.youtube = YouTubeReceiverManager(self.app_dir, self.state_dir, self.control_queue)
+        self.youtube_queue: list[dict] = []
 
         self.screen = Screen.HOME
         self.section = "HOME"
@@ -185,6 +194,7 @@ class App:
         self.local_roots = [Path(p) for p in ROOT_BROWSE_PATHS if Path(p).is_dir()]
         self._start_joystick_listener()
         self.refresh_sources()
+        self._autostart_youtube_receiver()
         log_event(
             "app_init",
             app_dir=str(self.app_dir),
@@ -207,6 +217,18 @@ class App:
             f"{len(self.dvd_candidates)} DVD source(s) ready" if self.dvd_candidates else "No DVD source found"
         )
         log_event("sources_refreshed", candidates=len(self.dvd_candidates), status=self.status_line)
+
+    def _autostart_youtube_receiver(self):
+        try:
+            if self.youtube.ensure_started():
+                log_event("youtube_receiver_autostart", status="ok")
+                return
+            error = self.youtube.state.last_error or "receiver_unavailable"
+            self.status_line = "YouTube receiver unavailable"
+            log_event("youtube_receiver_autostart", status="failed", error=error)
+        except Exception as exc:
+            self.status_line = "YouTube receiver unavailable"
+            log_event("youtube_receiver_autostart", status="exception", error=str(exc))
 
     def run(self):
         clock = pygame.time.Clock()
@@ -232,6 +254,7 @@ class App:
     def shutdown(self):
         log_event("app_shutdown")
         self._js_stop.set()
+        self.youtube.stop()
         if self.playback:
             self.persist_bookmark(force=True)
             self.playback.quit()
@@ -467,6 +490,18 @@ class App:
                         log_event("chapter_step_failed", delta=int(payload), error=str(exc), via="remote")
             elif event == "remote-play-json":
                 self.handle_remote_play_json(payload)
+            elif event == "youtube-sidecar-event":
+                self._handle_youtube_sidecar_event(payload)
+            elif event == "youtube_link_start":
+                self.open_youtube_link()
+            elif event == "youtube_unlink":
+                self.unlink_youtube()
+            elif event == "youtube_queue_next":
+                self._play_next_queued_youtube()
+            elif event == "youtube_queue_clear":
+                self.youtube_queue.clear()
+                self.youtube.queue_clear()
+                self.status_line = "YouTube queue cleared"
 
     def debug_ui(self, value: str):
         value = value.strip().lower()
@@ -491,6 +526,9 @@ class App:
             return
         if value == "plex-link":
             self.set_screen(Screen.PLEX_LINK, "PLEX LINK")
+            return
+        if value == "youtube-link":
+            self.open_youtube_link()
 
     def _pump_pygame(self):
         for event in pygame.event.get():
@@ -508,6 +546,7 @@ class App:
 
     def _tick(self):
         now = time.time()
+        self.youtube.tick(now)
         self._tick_background_work(now)
         self._tick_plex_link(now)
 
@@ -566,6 +605,8 @@ class App:
             self.handle_plex_link_action(action)
         elif self.screen == Screen.PLEX_CODE:
             self.handle_plex_code_action(action)
+        elif self.screen == Screen.YOUTUBE_LINK:
+            self.handle_youtube_link_action(action)
 
     def handle_home_action(self, action: Action):
         if action == Action.UP:
@@ -582,7 +623,7 @@ class App:
             elif self.home_selected == 1:
                 self.open_browser_mode()
             elif self.home_selected == 2:
-                self.open_plex()
+                self.open_media_server_menu()
             elif self.home_selected == 3:
                 self.open_settings_menu()
             elif self.home_selected == 4:
@@ -789,6 +830,192 @@ class App:
             return
         if action in {Action.ACCEPT, Action.START}:
             self.status_line = f"Waiting for Plex link: {self.plex_link_code or 'code'}"
+
+    def open_youtube_link(self):
+        if not self.youtube.link_start():
+            self.message = MessageBox("YOUTUBE", "Receiver unavailable")
+            self.status_line = "YouTube receiver unavailable"
+            return
+        self.status_line = "Waiting for TV code"
+        self.set_screen(Screen.YOUTUBE_LINK, "YOUTUBE LINK")
+
+    def unlink_youtube(self):
+        if not self.youtube.unlink():
+            self.message = MessageBox("YOUTUBE", "Receiver unavailable")
+            self.status_line = "YouTube receiver unavailable"
+            return
+        self.youtube_queue.clear()
+        self.status_line = "YouTube link reset"
+        if self.screen == Screen.LIST and self.section == "SETTINGS":
+            self._refresh_settings_items()
+        if self.screen == Screen.LIST and self.section == "MEDIA SERVER":
+            self.open_media_server_menu()
+        self.message = MessageBox("YOUTUBE", "YouTube unlinked")
+        log_event("settings_unlink_youtube")
+
+    def handle_youtube_link_action(self, action: Action):
+        if action == Action.BACK:
+            self.go_home()
+            return
+        if action == Action.SELECT:
+            self.status_line = "Use TV app > Link with TV code"
+            return
+        if action in {Action.ACCEPT, Action.START}:
+            if self.youtube.link_start():
+                self.status_line = "Waiting for TV code"
+            else:
+                self.status_line = "YouTube receiver unavailable"
+
+    def _start_youtube_resolve(self, request: dict):
+        label = str(request.get("title") or request.get("video_id") or "YOUTUBE")
+        self._start_busy("youtube_resolve", f"LOADING {label[:18]}", self.screen, self.section)
+        thread = threading.Thread(target=self._resolve_youtube_worker, args=(request,), daemon=True)
+        thread.start()
+
+    def _resolve_youtube_worker(self, request: dict):
+        try:
+            ref = str(request.get("url") or request.get("video_id") or "").strip()
+            if not ref:
+                raise RuntimeError("missing_youtube_reference")
+            resolved = resolve_youtube_stream(ref)
+            payload = {
+                "title": resolved.get("title") or request.get("title") or "YouTube",
+                "subtitle": "YouTube",
+                "kind": "youtube_video",
+                "url": resolved["stream_url"],
+                "authored_dvd": False,
+                "hint_width": resolved.get("width"),
+                "hint_height": resolved.get("height"),
+                "hint_fps": resolved.get("fps"),
+            }
+            self.background_queue.put(("youtube_resolve_done", request, payload, None))
+        except Exception as exc:
+            self.background_queue.put(("youtube_resolve_done", request, None, str(exc)))
+
+    def _finish_youtube_resolve(self, request: dict, payload: Optional[dict], error: Optional[str]):
+        self._clear_busy()
+        self.set_screen(self.busy_return_screen, self.busy_return_section or "YOUTUBE LINK")
+        if error:
+            self.message = MessageBox("YOUTUBE", "Cannot play video")
+            self.status_line = f"YouTube failed: {error[:48]}"
+            log_event("youtube_resolve_failed", error=error, video_id=request.get("video_id"), url=request.get("url"))
+            return
+        if not payload:
+            self.message = MessageBox("YOUTUBE", "Cannot play video")
+            self.status_line = "YouTube failed"
+            log_event("youtube_resolve_failed", error="missing_payload")
+            return
+        self.handle_remote_play_json(payload)
+        self.status_line = "YouTube playback active"
+        log_event(
+            "youtube_resolve_ok",
+            title=payload.get("title"),
+            video_id=request.get("video_id"),
+            hint_width=payload.get("hint_width"),
+            hint_height=payload.get("hint_height"),
+            hint_fps=payload.get("hint_fps"),
+        )
+
+    def _play_next_queued_youtube(self):
+        if self.youtube_queue:
+            request = self.youtube_queue.pop(0)
+            self._start_youtube_resolve(request)
+            return
+        self.youtube.queue_next()
+
+    def _handle_youtube_sidecar_event(self, payload: object):
+        if not isinstance(payload, dict):
+            return
+        event = str(payload.get("event") or "").strip().lower()
+        if event == "link_state":
+            state = str(payload.get("state") or "").strip().lower()
+            code = str(payload.get("code") or "").strip()
+            if state in {YOUTUBE_LINK_UNLINKED, YOUTUBE_LINK_CODE_PENDING, YOUTUBE_LINK_LINKED}:
+                self.youtube.state.link_state = state
+            self.youtube.state.code = code
+            screen_name = payload.get("screen_name")
+            if isinstance(screen_name, str) and screen_name.strip():
+                self.youtube.state.screen_name = screen_name.strip()
+            if self.youtube.state.link_state == YOUTUBE_LINK_LINKED:
+                self.status_line = "YouTube linked"
+            elif code:
+                self.status_line = f"TV code: {code}"
+            else:
+                self.status_line = "Waiting for TV code"
+            return
+
+        if event == "receiver_ready":
+            self.youtube.state.receiver_healthy = True
+            version = payload.get("receiver_version")
+            if isinstance(version, str) and version.strip():
+                self.youtube.state.receiver_version = version.strip()
+            screen_name = payload.get("screen_name")
+            if isinstance(screen_name, str) and screen_name.strip():
+                self.youtube.state.screen_name = screen_name.strip()
+            return
+
+        if event == "receiver_error":
+            self.youtube.state.receiver_healthy = False
+            self.status_line = "YouTube receiver error"
+            error = str(payload.get("error") or "receiver_error")
+            log_event("youtube_receiver_error", error=error)
+            return
+
+        if event == "receiver_exit":
+            self.youtube.state.receiver_healthy = False
+            self.status_line = "YouTube receiver stopped"
+            return
+
+        if event == "queue_add":
+            request = {
+                "video_id": str(payload.get("video_id") or "").strip(),
+                "title": str(payload.get("title") or "").strip(),
+                "url": str(payload.get("url") or "").strip(),
+            }
+            if request["video_id"] or request["url"]:
+                self.youtube_queue.append(request)
+            self.youtube.state.queue_size = max(self.youtube.state.queue_size, len(self.youtube_queue))
+            return
+
+        if event == "queue_clear":
+            self.youtube_queue.clear()
+            self.youtube.state.queue_size = 0
+            return
+
+        if event == "queue_next":
+            self._play_next_queued_youtube()
+            return
+
+        if event == "play":
+            request = {
+                "video_id": str(payload.get("video_id") or "").strip(),
+                "title": str(payload.get("title") or "").strip(),
+                "url": str(payload.get("url") or "").strip(),
+                "position_seconds": float(payload.get("position_seconds") or 0.0),
+            }
+            self._start_youtube_resolve(request)
+            return
+
+        if event == "pause" and self.playback:
+            self.playback.set_pause(True)
+            return
+
+        if event == "resume" and self.playback:
+            self.playback.set_pause(False)
+            return
+
+        if event == "seek" and self.playback:
+            try:
+                position_seconds = float(payload.get("position_seconds") or 0.0)
+            except Exception:
+                position_seconds = 0.0
+            self.playback.seek_absolute(max(0.0, position_seconds))
+            return
+
+        if event in {"status", "player_state"}:
+            queue_size = payload.get("queue_size")
+            if isinstance(queue_size, (int, float)):
+                self.youtube.state.queue_size = max(0, int(queue_size))
 
     def _tick_plex_link(self, now: float):
         if not self.plex_link_pin_id:
@@ -1057,9 +1284,13 @@ class App:
             "dvd_iso": PlaybackKind.DVD_ISO,
             "optical_drive": PlaybackKind.OPTICAL_DRIVE,
             "plex_video": PlaybackKind.PLEX_VIDEO,
+            "youtube_video": PlaybackKind.YOUTUBE_VIDEO,
         }
         kind = kind_map.get(kind_name, PlaybackKind.PLEX_VIDEO)
         authored_dvd = bool(payload.get("authored_dvd", kind in {PlaybackKind.DVD_FOLDER, PlaybackKind.DVD_ISO, PlaybackKind.OPTICAL_DRIVE}))
+        hint_width_raw = payload.get("hint_width")
+        hint_height_raw = payload.get("hint_height")
+        hint_fps_raw = payload.get("hint_fps")
         source = PlaybackSource(
             title=str(title) if isinstance(title, str) and title.strip() else Path(uri).name or "Remote video",
             kind=kind,
@@ -1067,6 +1298,9 @@ class App:
             subtitle=str(subtitle) if isinstance(subtitle, str) else "Remote play request",
             authored_dvd=authored_dvd,
             container=Path(uri).suffix.lower().lstrip(".") or None,
+            hint_width=int(hint_width_raw) if isinstance(hint_width_raw, (int, float)) else None,
+            hint_height=int(hint_height_raw) if isinstance(hint_height_raw, (int, float)) else None,
+            hint_fps=float(hint_fps_raw) if isinstance(hint_fps_raw, (int, float)) else None,
         )
         log_event("remote_play_json", uri=uri, kind=source.kind.value, title=source.title)
         self.start_playback(source, resume_prompt=False)
@@ -1370,13 +1604,15 @@ class App:
 
         while True:
             try:
-                event, protocol, hosts, error = self.background_queue.get_nowait()
+                event, payload, result, error = self.background_queue.get_nowait()
             except queue.Empty:
                 break
             if event == "scan_network_done":
-                self._finish_network_scan(protocol, hosts, error)
+                self._finish_network_scan(payload, result, error)
             elif event == "browse_network_done":
-                self._finish_network_browse(protocol, hosts, error)
+                self._finish_network_browse(payload, result, error)
+            elif event == "youtube_resolve_done":
+                self._finish_youtube_resolve(payload, result, error)
 
     def _finish_network_scan(self, protocol: str, hosts, error: Optional[str]):
         self._clear_busy()
@@ -1497,6 +1733,35 @@ class App:
             self.status_line = "Press A/START"
             self.set_screen(Screen.PLEX_LINK, "PLEX LINK")
 
+    def open_media_server_menu(self):
+        youtube_state = self._youtube_state_obj().link_state
+        if youtube_state == YOUTUBE_LINK_LINKED:
+            youtube_subtitle = "Linked"
+        elif youtube_state == YOUTUBE_LINK_CODE_PENDING:
+            youtube_subtitle = "Code pending"
+        else:
+            youtube_subtitle = "Link with code"
+        self.list_items = [
+            ListItem(
+                title="PLEX",
+                subtitle="Open library" if self.plex.has_token() else "Link Plex",
+                kind="media_server_plex",
+            ),
+            ListItem(
+                title="YOUTUBE LINK",
+                subtitle=youtube_subtitle,
+                kind="media_server_youtube_link",
+            ),
+            ListItem(
+                title="UNLINK YOUTUBE",
+                subtitle="Reset pairing",
+                kind="media_server_youtube_unlink",
+            ),
+        ]
+        self.list_selected = 0
+        self.set_screen(Screen.LIST, "MEDIA SERVER")
+        self._log_list_selection()
+
     def activate_list_item(self, item: ListItem):
         if item.kind == "browser_local":
             self.list_items = [
@@ -1510,6 +1775,18 @@ class App:
 
         if item.kind == "browser_network":
             self.open_network_home()
+            return
+
+        if item.kind == "media_server_plex":
+            self.open_plex()
+            return
+
+        if item.kind == "media_server_youtube_link":
+            self.open_youtube_link()
+            return
+
+        if item.kind == "media_server_youtube_unlink":
+            self.unlink_youtube()
             return
 
         if item.kind == "settings_crt_motion":
@@ -1538,6 +1815,14 @@ class App:
 
         if item.kind == "settings_runtime_install":
             self.install_runtime_dependencies()
+            return
+
+        if item.kind == "settings_youtube_link":
+            self.open_youtube_link()
+            return
+
+        if item.kind == "settings_unlink_youtube":
+            self.unlink_youtube()
             return
 
         if item.kind in {"local_root", "dir", "parent"} and item.path:
@@ -1818,7 +2103,7 @@ class App:
             log_event("bookmark_save", key=self.playback_bookmark_key, pos=pos, dur=dur)
 
     def _source_supports_resume(self, source: PlaybackSource) -> bool:
-        return source.kind in {PlaybackKind.VIDEO_FILE, PlaybackKind.PLEX_VIDEO} and not source.authored_dvd
+        return source.kind in {PlaybackKind.VIDEO_FILE, PlaybackKind.PLEX_VIDEO, PlaybackKind.YOUTUBE_VIDEO} and not source.authored_dvd
 
     def _draw(self):
         if self.screen == Screen.HOME:
@@ -1914,6 +2199,33 @@ class App:
             self.renderer.draw_model(model)
             return
 
+        if self.screen == Screen.YOUTUBE_LINK:
+            youtube_state = self._youtube_state_obj()
+            code = youtube_state.code or "...."
+            link_state = youtube_state.link_state
+            if link_state == YOUTUBE_LINK_LINKED:
+                status = "LINKED"
+            elif link_state == YOUTUBE_LINK_CODE_PENDING:
+                status = "WAITING"
+            else:
+                status = "UNLINKED"
+            rows = [
+                ("LINK WITH TV CODE", code, True),
+                ("STATUS", status, True),
+                ("SCREEN", youtube_state.screen_name or "YouTube on RGBPI", True),
+            ]
+            model = RenderModel(
+                title="DVD MEDIAPLAYER",
+                section="YOUTUBE LINK",
+                footer="A REFRESH   B BACK",
+                rows=rows,
+                selected=0,
+                message_title=self.message.title if self.message else None,
+                message_body=self.message.body if self.message else None,
+            )
+            self.renderer.draw_model(model)
+            return
+
         section = self.section
         rows = []
         if self.screen == Screen.PLAYBACK and self.playback_source:
@@ -1959,7 +2271,13 @@ class App:
         if idx == 1:
             return ("MEDIA LIBRARY", "Files and network", True)
         if idx == 2:
-            return ("MEDIA SERVER", "Plex ready" if self.plex.has_token() else "Link server", True)
+            if self._youtube_state_obj().link_state == YOUTUBE_LINK_LINKED:
+                server_subtitle = "Plex + YouTube linked"
+            elif self.plex.has_token():
+                server_subtitle = "Plex ready"
+            else:
+                server_subtitle = "Plex / YouTube"
+            return ("MEDIA SERVER", server_subtitle, True)
         if idx == 3:
             return ("SETTINGS", self._crt_motion_subtitle(), True)
         last = self.playback_state.last_played
@@ -2062,6 +2380,8 @@ class App:
             if bookmark:
                 bookmark_seconds = bookmark.position_seconds
 
+        youtube_state = self._youtube_state_obj()
+        youtube_queue = getattr(self, "youtube_queue", [])
         return RuntimeSnapshot(
             pid=os.getpid(),
             started_at_unix_ms=self.started_at_ms,
@@ -2095,6 +2415,10 @@ class App:
             playback_backend=playback_backend,
             playback_profile=playback_profile,
             playback_degraded=playback_degraded,
+            youtube_link_state=youtube_state.link_state,
+            youtube_screen_name=youtube_state.screen_name,
+            youtube_queue_size=max(youtube_state.queue_size, len(youtube_queue)),
+            youtube_receiver_healthy=bool(youtube_state.receiver_healthy),
             overlay_focus=self.playback_overlay_focus if self.playback_overlay in {"start_menu", "seek", "subtitle_menu"} else None,
             overlay_items=list(self.playback_overlay_items),
             active_tty=self.active_tty,
@@ -2197,38 +2521,53 @@ class App:
     def install_runtime_dependencies(self):
         installer = self.app_dir / "tools" / "install_runtime_deps.sh"
         if not installer.exists():
-            self.message = MessageBox("SETTINGS", "Installer script missing")
+            self.message = MessageBox("SETTINGS", "Runtime checker missing")
             log_event("settings_runtime_install_missing", path=str(installer))
             self.open_settings_menu()
             return
-        self._start_busy("settings_install_runtime", "Installing runtime deps", Screen.LIST, "SETTINGS")
+        self._start_busy("settings_install_runtime", "Checking runtime bundle", Screen.LIST, "SETTINGS")
         self._draw()
         try:
             proc = subprocess.run(
-                [str(installer), "--force"],
+                [str(installer), "--check"],
                 cwd=str(self.app_dir),
                 capture_output=True,
                 text=True,
-                timeout=900,
+                timeout=30,
                 check=False,
             )
             output = (proc.stdout or proc.stderr or "").strip()
             if proc.returncode == 0:
-                self.status_line = "MPV + libdvdcss ready"
-                self.message = MessageBox("SETTINGS", "Install/Update complete")
+                self.status_line = "Bundled runtime ready"
+                self.message = MessageBox("SETTINGS", "Runtime bundle OK")
                 log_event("settings_runtime_install_ok", output=output[-320:])
             else:
-                self.message = MessageBox("SETTINGS", "Install/Update failed")
+                self.message = MessageBox("SETTINGS", "Runtime bundle missing")
                 log_event(
                     "settings_runtime_install_failed",
                     code=proc.returncode,
                     output=output[-600:],
                 )
         except Exception as exc:
-            self.message = MessageBox("SETTINGS", "Install/Update failed")
+            self.message = MessageBox("SETTINGS", "Runtime bundle missing")
             log_event("settings_runtime_install_failed", error=str(exc))
         self._clear_busy()
         self.open_settings_menu()
+
+    def _youtube_state_obj(self):
+        manager = getattr(self, "youtube", None)
+        state = getattr(manager, "state", None)
+        if state is None:
+            class _Fallback:
+                link_state = YOUTUBE_LINK_UNLINKED
+                code = ""
+                screen_name = None
+                queue_size = 0
+                receiver_healthy = False
+                receiver_version = None
+
+            return _Fallback()
+        return state
 
     def _crt_motion_label(self, value: str) -> str:
         if value == "cable_smooth":
@@ -2352,8 +2691,18 @@ class App:
                 kind="settings_reset_plex_link",
             ),
             ListItem(
-                title="INSTALL/UPDATE",
-                subtitle="MPV + libdvdcss",
+                title="YOUTUBE LINK WITH CODE",
+                subtitle="Start TV code pairing",
+                kind="settings_youtube_link",
+            ),
+            ListItem(
+                title="UNLINK YOUTUBE",
+                subtitle="Reset TV pairing",
+                kind="settings_unlink_youtube",
+            ),
+            ListItem(
+                title="RUNTIME CHECK",
+                subtitle="Bundled MPV + libdvdcss",
                 kind="settings_runtime_install",
             ),
         ]
@@ -2388,6 +2737,7 @@ class App:
             PlaybackKind.DVD_ISO: "dvd-iso",
             PlaybackKind.OPTICAL_DRIVE: "dvd-drive",
             PlaybackKind.PLEX_VIDEO: "plex",
+            PlaybackKind.YOUTUBE_VIDEO: "youtube",
         }[source.kind]
         return f"{prefix}:{source.uri}"
 

@@ -1,2 +1,0 @@
-[console_scripts]
-dvdplayer-python = dvdplayer_python.main:main

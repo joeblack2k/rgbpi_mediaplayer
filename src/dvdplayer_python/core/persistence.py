@@ -144,6 +144,9 @@ def _encode_source(source: PlaybackSource) -> dict:
         "authored_dvd": bool(source.authored_dvd),
         "file_size": source.file_size,
         "container": source.container,
+        "hint_width": source.hint_width,
+        "hint_height": source.hint_height,
+        "hint_fps": source.hint_fps,
     }
 
 
@@ -162,6 +165,12 @@ def _decode_source(raw: object) -> Optional[PlaybackSource]:
     file_size: Optional[int] = None
     if isinstance(file_size_raw, (int, float)):
         file_size = int(file_size_raw)
+    hint_width_raw = raw.get("hint_width")
+    hint_height_raw = raw.get("hint_height")
+    hint_fps_raw = raw.get("hint_fps")
+    hint_width: Optional[int] = int(hint_width_raw) if isinstance(hint_width_raw, (int, float)) else None
+    hint_height: Optional[int] = int(hint_height_raw) if isinstance(hint_height_raw, (int, float)) else None
+    hint_fps: Optional[float] = float(hint_fps_raw) if isinstance(hint_fps_raw, (int, float)) else None
     return PlaybackSource(
         title=str(raw.get("title") or Path(uri).name or "Video"),
         kind=kind,
@@ -170,6 +179,9 @@ def _decode_source(raw: object) -> Optional[PlaybackSource]:
         authored_dvd=bool(raw.get("authored_dvd", False)),
         file_size=file_size,
         container=str(raw.get("container") or "") or None,
+        hint_width=hint_width,
+        hint_height=hint_height,
+        hint_fps=hint_fps,
     )
 
 

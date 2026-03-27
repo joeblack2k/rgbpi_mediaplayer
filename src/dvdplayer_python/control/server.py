@@ -167,6 +167,19 @@ class ControlServer:
             self.queue.put(("remote-play-json", payload))
             return "ok"
 
+        if cmd in {"youtube-link-start", "youtube_link_start"}:
+            self.queue.put(("youtube_link_start", None))
+            return "ok"
+        if cmd in {"youtube-unlink", "youtube_unlink"}:
+            self.queue.put(("youtube_unlink", None))
+            return "ok"
+        if cmd in {"youtube-queue-next", "youtube_queue_next"}:
+            self.queue.put(("youtube_queue_next", None))
+            return "ok"
+        if cmd in {"youtube-queue-clear", "youtube_queue_clear"}:
+            self.queue.put(("youtube_queue_clear", None))
+            return "ok"
+
         mapping = {
             "up": Action.UP,
             "down": Action.DOWN,

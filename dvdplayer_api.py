@@ -10,7 +10,21 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-APP_RUNTIME_DIR = Path("/media/sd/roms/ports/dvdplayer-python/state/runtime")
+PORTS_ROOT = Path("/media/sd/roms/ports")
+RUNTIME_DIR_CANDIDATES = (
+    PORTS_ROOT / "rgbpi_mediaplayer" / "state" / "runtime",
+    PORTS_ROOT / "dvdplayer-python" / "state" / "runtime",
+)
+
+
+def _default_runtime_dir() -> Path:
+    for candidate in RUNTIME_DIR_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return RUNTIME_DIR_CANDIDATES[0]
+
+
+APP_RUNTIME_DIR = _default_runtime_dir()
 DEFAULT_SOCKET_PATH = Path(
     os.environ.get(
         "DVDPLAYER_CONTROL_SOCKET",
@@ -177,7 +191,7 @@ def print_json(obj: dict) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="dvdplayer-python API helper")
+    parser = argparse.ArgumentParser(description="rgbpi_mediaplayer API helper")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("ping")
@@ -232,6 +246,10 @@ def main() -> int:
         "remote-pause",
         "remote-resume",
         "remote-stop",
+        "youtube-link-start",
+        "youtube-unlink",
+        "youtube-queue-next",
+        "youtube-queue-clear",
     ]:
         sub.add_parser(name)
 

@@ -1,0 +1,9 @@
+{
+  "name": "rgbpi-youtube-receiver-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "yt-cast-receiver": "2.1.0"
+  }
+}

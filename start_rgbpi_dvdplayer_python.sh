@@ -5,12 +5,16 @@ APP_DIR="${DVDPLAYER_APP_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 VENV="$APP_DIR/.venv"
 TIMINGS_FILE="/opt/rgbpi/ui/data/timings.dat"
 RUNTIME_DIR="$APP_DIR/state/runtime"
+RUNTIME_ROOT="$APP_DIR/runtime/linux-arm64-rootfs"
 LOG_FILE="$RUNTIME_DIR/rgbpi-dvdplayer-python-launch.log"
 export DVDPLAYER_APP_DIR="$APP_DIR"
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 export DVDPLAYER_MPV_BIN="${DVDPLAYER_MPV_BIN:-$APP_DIR/bin/mpv}"
 EXTRA_LIB_DIRS="$APP_DIR/lib"
+if [ -d "$RUNTIME_ROOT/lib/aarch64-linux-gnu" ]; then
+  EXTRA_LIB_DIRS="$RUNTIME_ROOT/lib/aarch64-linux-gnu:$RUNTIME_ROOT/usr/lib/aarch64-linux-gnu:$RUNTIME_ROOT/usr/lib/aarch64-linux-gnu/pulseaudio:$RUNTIME_ROOT/usr/lib/aarch64-linux-gnu/samba:$EXTRA_LIB_DIRS"
+fi
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then
   export LD_LIBRARY_PATH="$EXTRA_LIB_DIRS:$LD_LIBRARY_PATH"
 else
@@ -107,7 +111,7 @@ LOG_FILE="$(choose_log_file)"
 pkill -f 'python.*-m dvdplayer_python.main' >/dev/null 2>&1 || true
 
 if [ -x "$APP_DIR/tools/install_runtime_deps.sh" ]; then
-  "$APP_DIR/tools/install_runtime_deps.sh" --auto >>"$LOG_FILE" 2>&1 || true
+  "$APP_DIR/tools/install_runtime_deps.sh" --check >>"$LOG_FILE" 2>&1
 fi
 
 PYTHON=""

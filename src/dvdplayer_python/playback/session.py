@@ -303,6 +303,21 @@ def _target_mode_for_source(source: PlaybackSource) -> Optional[str]:
         log_event("video_timing_probe", title=source.title, kind=source.kind.value, mode=fallback, probe="authored_dvd_fallback")
         return fallback
 
+    if isinstance(source.hint_width, int) and isinstance(source.hint_height, int):
+        mode = _desired_output_mode(source.hint_width, source.hint_height, source.hint_fps)
+        if mode:
+            log_event(
+                "video_timing_probe",
+                title=source.title,
+                kind=source.kind.value,
+                width=source.hint_width,
+                height=source.hint_height,
+                fps=source.hint_fps,
+                mode=mode,
+                probe="source_hint",
+            )
+            return mode
+
     info = _probe_video_info(source.uri)
     if not info:
         return None
@@ -437,7 +452,7 @@ def playback_profile_for_source(source: PlaybackSource, prefs: Optional[Playback
 def force_43_for_source(source: PlaybackSource, prefs: Optional[PlaybackPrefs] = None) -> bool:
     if source.authored_dvd:
         return False
-    if source.kind not in {PlaybackKind.VIDEO_FILE, PlaybackKind.PLEX_VIDEO}:
+    if source.kind not in {PlaybackKind.VIDEO_FILE, PlaybackKind.PLEX_VIDEO, PlaybackKind.YOUTUBE_VIDEO}:
         return False
     return bool(getattr(prefs, "force_43", False))
 
@@ -446,7 +461,7 @@ def audio_normalization_profile_for_source(
     source: PlaybackSource,
     prefs: Optional[PlaybackPrefs] = None,
 ) -> tuple[str, Optional[str]]:
-    if source.authored_dvd or source.kind not in {PlaybackKind.VIDEO_FILE, PlaybackKind.PLEX_VIDEO}:
+    if source.authored_dvd or source.kind not in {PlaybackKind.VIDEO_FILE, PlaybackKind.PLEX_VIDEO, PlaybackKind.YOUTUBE_VIDEO}:
         return "off", None
     configured = _normalize_volume_normalization(getattr(prefs, "volume_normalization", "light"))
     if configured == "off":
