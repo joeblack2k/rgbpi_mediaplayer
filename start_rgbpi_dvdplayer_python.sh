@@ -98,7 +98,6 @@ rm -f \
   "$RUNTIME_DIR/rgbpi-dvdplayer.lock" \
   "$RUNTIME_DIR/rgbpi-dvdplayer-state.json" \
   "$RUNTIME_DIR/state.json" \
-  "$RUNTIME_DIR/test-mode.json" \
   2>/dev/null || true
 
 can_run() {
@@ -110,8 +109,8 @@ can_run() {
 LOG_FILE="$(choose_log_file)"
 pkill -f 'python.*-m dvdplayer_python.main' >/dev/null 2>&1 || true
 
-if [ -x "$APP_DIR/tools/install_runtime_deps.sh" ]; then
-  "$APP_DIR/tools/install_runtime_deps.sh" --check >>"$LOG_FILE" 2>&1
+if [ -x "$APP_DIR/runtime/check_runtime_bundle.sh" ]; then
+  "$APP_DIR/runtime/check_runtime_bundle.sh" --check >>"$LOG_FILE" 2>&1
 fi
 
 PYTHON=""

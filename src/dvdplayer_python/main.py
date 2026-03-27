@@ -65,6 +65,7 @@ OVERLAY_ACTION_DVD_MENU = "dvd_menu"
 OVERLAY_ACTION_CHAPTER_PREV = "chapter_prev"
 OVERLAY_ACTION_CHAPTER_NEXT = "chapter_next"
 OVERLAY_ACTION_SUBTITLES = "subtitles_menu"
+OVERLAY_ACTION_INFORMATION = "information"
 OVERLAY_ACTION_RETURN_TO_BROWSER = "return_to_browser"
 OVERLAY_ACTION_SUBTITLE_OFF = "subtitle_off"
 OVERLAY_ACTION_SUBTITLE_TRACK_PREFIX = "subtitle_track:"
@@ -75,15 +76,18 @@ START_MENU_ENTRIES_DVD = [
     (OVERLAY_ACTION_CHAPTER_PREV, "CHAPTER -"),
     (OVERLAY_ACTION_CHAPTER_NEXT, "CHAPTER +"),
     (OVERLAY_ACTION_SUBTITLES, "ENABLE SUBTITLES"),
+    (OVERLAY_ACTION_INFORMATION, "INFORMATION"),
     (OVERLAY_ACTION_RETURN_TO_BROWSER, "RETURN TO BROWSER"),
 ]
 START_MENU_ENTRIES_VIDEO = [
     (OVERLAY_ACTION_TOGGLE_PAUSE, "TOGGLE PAUSE"),
+    (OVERLAY_ACTION_INFORMATION, "INFORMATION"),
     (OVERLAY_ACTION_RETURN_TO_BROWSER, "RETURN TO BROWSER"),
 ]
 START_MENU_ENTRIES_PLEX = [
     (OVERLAY_ACTION_TOGGLE_PAUSE, "TOGGLE PAUSE"),
     (OVERLAY_ACTION_SUBTITLES, "ENABLE SUBTITLES"),
+    (OVERLAY_ACTION_INFORMATION, "INFORMATION"),
     (OVERLAY_ACTION_RETURN_TO_BROWSER, "RETURN TO BROWSER"),
 ]
 VISIBLE_LIST_ROWS = 6
@@ -1050,7 +1054,7 @@ class App:
     def handle_playback_action(self, action: Action):
         if not self.playback:
             return
-        if self.playback_overlay in {"start_menu", "seek", "subtitle_menu"}:
+        if self.playback_overlay in {"start_menu", "seek", "subtitle_menu", "information"}:
             self._handle_playback_overlay_action(action)
             return
         if action == Action.BACK:
@@ -1141,6 +1145,110 @@ class App:
             items=len(self.playback_overlay_items),
         )
 
+    def _read_playback_property(self, name: str):
+        if not self.playback:
+            return None
+        try:
+            return self.playback.get_property(name)
+        except Exception:
+            return None
+
+    def _current_tv_hz_label(self) -> str:
+        display_fps = self._read_playback_property("display-fps")
+        try:
+            fps = float(display_fps)
+        except (TypeError, ValueError):
+            fps = None
+        if fps is not None:
+            if fps >= 55.0:
+                return "60HZ"
+            if fps >= 45.0:
+                return "50HZ"
+        mode = (self.playback.effective_mode or self.playback.target_mode) if self.playback else None
+        mode_text = str(mode or "").lower()
+        if "576" in mode_text:
+            return "50HZ"
+        if "480" in mode_text:
+            return "60HZ"
+        return "UNKNOWN"
+
+    def _current_interpolation_type(self) -> str:
+        vf = self._read_playback_property("vf")
+        if isinstance(vf, list):
+            for item in vf:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").lower()
+                if name != "lavfi":
+                    continue
+                params = item.get("params")
+                if isinstance(params, dict):
+                    graph = str(params.get("graph") or "").lower()
+                    if "tblend" in graph:
+                        return "TBLEND"
+        interpolation = self._read_playback_property("interpolation")
+        if bool(interpolation):
+            tscale = str(self._read_playback_property("tscale") or "").strip().upper() or "MPV"
+            return f"MPV {tscale}"
+        return "OFF"
+
+    def _open_information_overlay(self):
+        if not self.playback:
+            return
+        video_codec = str(self._read_playback_property("video-codec") or "UNKNOWN").upper()
+        audio_codec = str(
+            self._read_playback_property("audio-codec-name")
+            or self._read_playback_property("audio-codec")
+            or "UNKNOWN"
+        ).upper()
+        video_params = self._read_playback_property("video-params")
+        if isinstance(video_params, dict):
+            w = int(video_params.get("dw") or video_params.get("w") or 0)
+            h = int(video_params.get("dh") or video_params.get("h") or 0)
+        else:
+            w = 0
+            h = 0
+        video_resolution = f"{w}x{h}" if w > 0 and h > 0 else "UNKNOWN"
+        tv_mode = self.playback.effective_mode or self.playback.target_mode
+        tv_resolution = str(tv_mode or "UNKNOWN").upper()
+        video_fps_raw = self._read_playback_property("container-fps") or self._read_playback_property("estimated-vf-fps")
+        try:
+            video_fps = f"{float(video_fps_raw):.3f}"
+        except (TypeError, ValueError):
+            video_fps = "UNKNOWN"
+        tv_hz = self._current_tv_hz_label()
+        interpolation_type = self._current_interpolation_type()
+        rows = [
+            "INFORMATION",
+            "",
+            f"VIDEO CODEC: {video_codec}",
+            f"AUDIO CODEC: {audio_codec}",
+            f"VIDEO RESOLUTION: {video_resolution}",
+            f"TV RESOLUTION: {tv_resolution}",
+            f"VIDEO FPS: {video_fps}",
+            f"TV MODE: {tv_hz}",
+            f"INTERPOLATION TYPE: {interpolation_type}",
+            "",
+            "START/SELECT/B CLOSE",
+        ]
+        self.playback_overlay = "information"
+        self.playback_overlay_focus = 0
+        self.playback_overlay_items = []
+        self.playback_overlay_actions = []
+        self.playback.show_text("\n".join(rows), duration_ms=600000)
+        log_event(
+            "overlay_open",
+            overlay=self.playback_overlay,
+            source_kind=self.playback_source.kind.value if self.playback_source else "unknown",
+            video_codec=video_codec,
+            audio_codec=audio_codec,
+            video_resolution=video_resolution,
+            tv_resolution=tv_resolution,
+            video_fps=video_fps,
+            tv_hz=tv_hz,
+            interpolation_type=interpolation_type,
+        )
+
     def _close_overlay(self):
         if not self.playback:
             self._reset_playback_overlay_state()
@@ -1169,6 +1277,8 @@ class App:
                 self.playback.step_chapter(1)
             elif action_id == OVERLAY_ACTION_SUBTITLES:
                 self._open_subtitle_overlay()
+            elif action_id == OVERLAY_ACTION_INFORMATION:
+                self._open_information_overlay()
             elif action_id == OVERLAY_ACTION_RETURN_TO_BROWSER:
                 self.stop_playback("Returned to browser")
             else:
@@ -1212,7 +1322,7 @@ class App:
                 self._execute_overlay_action(action_id)
                 if action_id == OVERLAY_ACTION_RETURN_TO_BROWSER:
                     return
-                if action_id == OVERLAY_ACTION_SUBTITLES:
+                if action_id in {OVERLAY_ACTION_SUBTITLES, OVERLAY_ACTION_INFORMATION}:
                     return
                 self._close_overlay()
                 return
@@ -1264,6 +1374,10 @@ class App:
                 self.playback.set_pause(paused)
                 self.playback.show_seek_overlay(paused=paused, step_seconds=30)
                 log_event("playback_pause", paused=paused, via="overlay")
+                return
+        elif self.playback_overlay == "information":
+            if action == Action.ACCEPT:
+                self._close_overlay()
                 return
 
     def handle_remote_play_json(self, payload: object):
@@ -2519,7 +2633,7 @@ class App:
         log_event("settings_reset_plex_link")
 
     def install_runtime_dependencies(self):
-        installer = self.app_dir / "tools" / "install_runtime_deps.sh"
+        installer = self.app_dir / "runtime" / "check_runtime_bundle.sh"
         if not installer.exists():
             self.message = MessageBox("SETTINGS", "Runtime checker missing")
             log_event("settings_runtime_install_missing", path=str(installer))
@@ -2577,6 +2691,12 @@ class App:
     def _crt_motion_subtitle(self) -> str:
         return self._crt_motion_label(self.playback_state.prefs.motion_mode)
 
+    def _default_mode_label(self, value: str) -> str:
+        return "50HZ (576I)" if str(value).lower() == "50hz" else "60HZ (480I)"
+
+    def _default_mode_subtitle(self) -> str:
+        return self._default_mode_label(self.playback_state.prefs.default_mode)
+
     def _force_43_subtitle(self) -> str:
         return "ON" if self.playback_state.prefs.force_43 else "OFF"
 
@@ -2596,6 +2716,7 @@ class App:
     def _switchable_settings_kinds(self) -> set[str]:
         return {
             "settings_crt_motion",
+            "settings_default_mode",
             "settings_volume_normalization",
             "settings_force_43",
         }
@@ -2637,6 +2758,21 @@ class App:
             self.message = MessageBox("SETTINGS", self._crt_motion_label(next_mode))
             log_event("settings_motion_mode", motion_mode=next_mode, via=action.value)
             return True
+        if item.kind == "settings_default_mode":
+            order = ["60hz", "50hz"]
+            current = str(self.playback_state.prefs.default_mode or "60hz").lower()
+            try:
+                idx = order.index(current)
+            except ValueError:
+                idx = 0
+            next_mode = order[(idx + step) % len(order)]
+            self.playback_state.prefs.default_mode = next_mode
+            self.playback_state.write_prefs()
+            self._refresh_settings_items()
+            self.status_line = f"Default mode {self._default_mode_label(next_mode)}"
+            self.message = MessageBox("SETTINGS", f"DEFAULT MODE {self._default_mode_label(next_mode)}")
+            log_event("settings_default_mode", value=next_mode, via=action.value)
+            return True
         if item.kind == "settings_volume_normalization":
             order = ["off", "light", "high"]
             current = str(self.playback_state.prefs.volume_normalization or "light").lower()
@@ -2674,6 +2810,11 @@ class App:
                 title="CABLE SMOOTH PRESET",
                 subtitle="Apply 1999 cable profile",
                 kind="settings_cable_smooth_preset",
+            ),
+            ListItem(
+                title="DEFAULT MODE",
+                subtitle=self._default_mode_subtitle(),
+                kind="settings_default_mode",
             ),
             ListItem(
                 title="VOLUME NORMALIZATION",

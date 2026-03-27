@@ -157,6 +157,7 @@ class PlaybackPrefs:
     subtitles_enabled: bool = False
     preferred_subtitle_language: Optional[str] = None
     motion_mode: str = "smooth_tv"
+    default_mode: str = "60hz"
     force_43: bool = False
     volume_normalization: str = "light"
     deinterlace_mode: str = "weave"

@@ -19,8 +19,8 @@ from dvdplayer_python.core.debuglog import log_event
 YOUTUBE_LINK_UNLINKED = "unlinked"
 YOUTUBE_LINK_CODE_PENDING = "code_pending"
 YOUTUBE_LINK_LINKED = "linked"
-BUNDLED_NODE_RELATIVE_PATH = Path("tools/node_runtime/linux-arm/node")
-BUNDLED_YTDLP_RELATIVE_PATH = Path("tools/yt_dlp/linux-arm/yt-dlp")
+BUNDLED_NODE_RELATIVE_PATH = Path("runtime/node/linux-arm/node")
+BUNDLED_YTDLP_RELATIVE_PATH = Path("runtime/yt_dlp/linux-arm/yt-dlp")
 RECEIVER_PACKAGE_RELATIVE_PATH = Path("node_modules/yt-cast-receiver/package.json")
 
 
@@ -108,7 +108,7 @@ class YouTubeReceiverManager:
         self.app_dir = app_dir
         self.state_dir = state_dir
         self.control_queue = control_queue
-        self.receiver_dir = self.app_dir / "tools" / "youtube_receiver"
+        self.receiver_dir = self.app_dir / "runtime" / "youtube_receiver"
         self.receiver_script = self.receiver_dir / "sidecar.mjs"
         self.receiver_package = self.receiver_dir / RECEIVER_PACKAGE_RELATIVE_PATH
         self.receiver_state_dir = self.state_dir / "youtube"

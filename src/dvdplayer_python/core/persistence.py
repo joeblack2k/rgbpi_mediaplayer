@@ -32,6 +32,7 @@ class PlaybackStateStore:
             if isinstance(raw, dict):
                 self.prefs = PlaybackPrefs(**{**asdict(PlaybackPrefs()), **raw})
                 self.prefs.motion_mode = _normalize_motion_mode(self.prefs.motion_mode)
+                self.prefs.default_mode = _normalize_default_mode(self.prefs.default_mode)
                 self.prefs.volume_normalization = _normalize_volume_normalization(self.prefs.volume_normalization)
                 self.prefs.deinterlace_mode = _normalize_deinterlace_mode(self.prefs.deinterlace_mode)
         if self.last_played_path.is_file():
@@ -69,6 +70,7 @@ class PlaybackStateStore:
 
     def write_prefs(self) -> None:
         self.prefs.motion_mode = _normalize_motion_mode(self.prefs.motion_mode)
+        self.prefs.default_mode = _normalize_default_mode(self.prefs.default_mode)
         self.prefs.volume_normalization = _normalize_volume_normalization(self.prefs.volume_normalization)
         self.prefs.deinterlace_mode = _normalize_deinterlace_mode(self.prefs.deinterlace_mode)
         self.prefs_path.write_text(json.dumps(asdict(self.prefs), indent=2), encoding="utf-8")
@@ -126,6 +128,13 @@ def _normalize_volume_normalization(value: object) -> str:
     if text in {"high", "strong", "aggressive"}:
         return "high"
     return "light"
+
+
+def _normalize_default_mode(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"50", "50hz", "pal", "576", "576i"}:
+        return "50hz"
+    return "60hz"
 
 
 def _normalize_deinterlace_mode(value: object) -> str:

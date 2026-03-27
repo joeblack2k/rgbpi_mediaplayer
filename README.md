@@ -64,11 +64,11 @@ folder, without runtime `apt/pip/npm` installs.
 Bundled runtime paths:
 - bundled MPV binary: `bin/mpv`
 - bundled Linux ARM rootfs libs (incl. `libdvdcss`): `runtime/linux-arm64-rootfs/`
-- sidecar script: `tools/youtube_receiver/sidecar.mjs`
-- sidecar packages: `tools/youtube_receiver/node_modules/`
+- sidecar script: `runtime/youtube_receiver/sidecar.mjs`
+- sidecar packages: `runtime/youtube_receiver/node_modules/`
 - vendored `yt_dlp` module: `src/dvdplayer_python/vendor/yt_dlp/`
-- bundled `yt-dlp` fallback binary: `tools/yt_dlp/linux-arm/yt-dlp`
-- bundled Linux ARM Node runtime: `tools/node_runtime/linux-arm/node`
+- bundled `yt-dlp` fallback binary: `runtime/yt_dlp/linux-arm/yt-dlp`
+- bundled Linux ARM Node runtime: `runtime/node/linux-arm/node`
 
 Expected target:
 - Linux ARM devices (RGB-Pi style deployment)
@@ -91,5 +91,5 @@ Quick validation:
 
 ## Runtime checker
 
-`tools/install_runtime_deps.sh` validates that bundled runtime files are present.
+`runtime/check_runtime_bundle.sh` validates that bundled runtime files are present.
 The launcher runs this check at startup and aborts if the bundle is incomplete.

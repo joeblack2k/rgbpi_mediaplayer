@@ -3,7 +3,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 node_modules/
+!runtime/youtube_receiver/node_modules/
+!runtime/youtube_receiver/node_modules/**
 state/
 *.log
 .DS_Store
-tools/runtime_bundle/

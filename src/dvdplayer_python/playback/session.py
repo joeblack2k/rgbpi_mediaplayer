@@ -21,11 +21,19 @@ LIGHT_NORMALIZATION_FILTER = "lavfi=[acompressor=threshold=-16dB:ratio=2:attack=
 HIGH_NORMALIZATION_FILTER = "lavfi=[loudnorm=I=-18:TP=-2:LRA=11]"
 BOB_DEINTERLACE_FILTER = "bwdif=mode=send_field:parity=auto:deint=interlaced"
 SMOOTH_FPS_FILTER = "fps=60000/1001"
+CABLE_SMOOTH_BLEND_FILTER = "lavfi=[tblend=all_mode=average]"
 _FFMPEG_FILTER_SUPPORT_CACHE: dict[str, bool] = {}
 
 
 def _which(binary: str) -> Optional[str]:
-    preferred = os.environ.get("DVDPLAYER_MPV_BIN")
+    name = str(binary or "").strip().lower()
+    env_key = {
+        "mpv": "DVDPLAYER_MPV_BIN",
+        "ffprobe": "DVDPLAYER_FFPROBE_BIN",
+        "ffmpeg": "DVDPLAYER_FFMPEG_BIN",
+        "modetest": "DVDPLAYER_MODETEST_BIN",
+    }.get(name)
+    preferred = os.environ.get(env_key) if env_key else None
     if preferred:
         p = Path(preferred)
         if p.is_file() and os.access(p, os.X_OK):
@@ -55,6 +63,13 @@ def _normalize_volume_normalization(value: object) -> str:
     if text in {"high", "strong", "aggressive"}:
         return "high"
     return "light"
+
+
+def _normalize_default_mode(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"50", "50hz", "pal", "576", "576i"}:
+        return "50hz"
+    return "60hz"
 
 
 def _normalize_deinterlace_mode(value: object) -> str:
@@ -102,11 +117,13 @@ def _is_pal_rate(fps: float) -> bool:
     return abs(fps - 25.0) < 0.2 or abs(fps - 50.0) < 0.2
 
 
+def _is_film_rate(fps: float) -> bool:
+    return abs(fps - 23.976) < 0.2 or abs(fps - 24.0) < 0.2
+
+
 def _is_ntsc_rate(fps: float) -> bool:
     return (
-        abs(fps - 23.976) < 0.2
-        or abs(fps - 24.0) < 0.2
-        or abs(fps - 29.97) < 0.2
+        abs(fps - 29.97) < 0.2
         or abs(fps - 30.0) < 0.2
         or abs(fps - 59.94) < 0.2
         or abs(fps - 60.0) < 0.2
@@ -116,6 +133,8 @@ def _is_ntsc_rate(fps: float) -> bool:
 def _desired_output_mode(width: int, height: int, fps: Optional[float]) -> Optional[str]:
     if width <= 400 and height <= 300:
         return None
+    if fps is not None and _is_film_rate(fps):
+        return "720x576i"
     if fps is not None and _is_pal_rate(fps):
         return "720x576i"
     if fps is not None and _is_ntsc_rate(fps):
@@ -184,42 +203,98 @@ def _probe_video_info(uri: str) -> Optional[VideoProbeInfo]:
     ffprobe = _which("ffprobe") or ("/usr/bin/ffprobe" if Path("/usr/bin/ffprobe").exists() else None)
     if not ffprobe:
         return None
-    try:
-        out = subprocess.check_output(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height,avg_frame_rate,r_frame_rate,field_order",
-                "-of",
-                "json",
-                uri,
-            ],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=FFPROBE_TIMEOUT_SECS,
-        )
-    except Exception:
-        return None
+    args = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate,r_frame_rate,field_order",
+        "-of",
+        "json",
+        uri,
+    ]
+    timeouts = [FFPROBE_TIMEOUT_SECS, max(FFPROBE_TIMEOUT_SECS * 2.0, 12.0)]
+    for timeout in timeouts:
+        try:
+            out = subprocess.check_output(
+                args,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception:
+            continue
+        try:
+            payload = json.loads(out)
+            streams = payload.get("streams") or []
+            if not streams:
+                continue
+            stream = streams[0]
+            width = int(stream.get("width") or 0)
+            height = int(stream.get("height") or 0)
+            fps = _parse_frame_rate(stream.get("avg_frame_rate")) or _parse_frame_rate(stream.get("r_frame_rate"))
+            field_order = stream.get("field_order")
+            if width <= 0 or height <= 0:
+                continue
+            return VideoProbeInfo(width=width, height=height, fps=fps, field_order=str(field_order) if field_order else None)
+        except Exception:
+            continue
+    return None
 
-    try:
-        payload = json.loads(out)
-        streams = payload.get("streams") or []
-        if not streams:
-            return None
-        stream = streams[0]
-        width = int(stream.get("width") or 0)
-        height = int(stream.get("height") or 0)
-        fps = _parse_frame_rate(stream.get("avg_frame_rate")) or _parse_frame_rate(stream.get("r_frame_rate"))
-        field_order = stream.get("field_order")
-        if width <= 0 or height <= 0:
-            return None
-        return VideoProbeInfo(width=width, height=height, fps=fps, field_order=str(field_order) if field_order else None)
-    except Exception:
+
+def _probe_video_fps(uri: str) -> Optional[float]:
+    ffprobe = _which("ffprobe") or ("/usr/bin/ffprobe" if Path("/usr/bin/ffprobe").exists() else None)
+    if not ffprobe:
         return None
+    args = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate,r_frame_rate",
+        "-of",
+        "json",
+        uri,
+    ]
+    timeouts = [FFPROBE_TIMEOUT_SECS, max(FFPROBE_TIMEOUT_SECS * 2.0, 12.0)]
+    for timeout in timeouts:
+        try:
+            out = subprocess.check_output(
+                args,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception:
+            continue
+        try:
+            payload = json.loads(out)
+            streams = payload.get("streams") or []
+            if not streams:
+                continue
+            stream = streams[0]
+            fps = _parse_frame_rate(stream.get("avg_frame_rate")) or _parse_frame_rate(stream.get("r_frame_rate"))
+            if fps is not None:
+                return fps
+        except Exception:
+            continue
+    return None
+
+
+def _mode_from_fps_only(fps: Optional[float]) -> Optional[str]:
+    if fps is None:
+        return None
+    if _is_film_rate(fps):
+        return "720x576i"
+    if _is_pal_rate(fps):
+        return "720x576i"
+    if _is_ntsc_rate(fps):
+        return "720x480i"
+    return None
 
 
 def _probe_mpeg2_dimensions(path: Path) -> Optional[tuple[int, int]]:
@@ -265,7 +340,9 @@ def _probe_authored_dvd_dimensions(path: Path) -> Optional[tuple[int, int]]:
     return None
 
 
-def _target_mode_for_source(source: PlaybackSource) -> Optional[str]:
+def _target_mode_for_source(source: PlaybackSource, prefs: Optional[PlaybackPrefs] = None) -> Optional[str]:
+    fallback_default_mode = _normalize_default_mode(getattr(prefs, "default_mode", "60hz"))
+    default_fallback_output_mode = "720x576i" if fallback_default_mode == "50hz" else "720x480i"
     if source.authored_dvd:
         p = Path(source.uri)
         if p.exists():
@@ -299,7 +376,7 @@ def _target_mode_for_source(source: PlaybackSource) -> Optional[str]:
                 )
                 return mode
         # CRT-safe default when authored DVD dimensions cannot be probed.
-        fallback = os.environ.get("DVDPLAYER_DVD_FALLBACK_MODE", "720x576i")
+        fallback = os.environ.get("DVDPLAYER_DVD_FALLBACK_MODE", "").strip() or default_fallback_output_mode
         log_event("video_timing_probe", title=source.title, kind=source.kind.value, mode=fallback, probe="authored_dvd_fallback")
         return fallback
 
@@ -317,10 +394,41 @@ def _target_mode_for_source(source: PlaybackSource) -> Optional[str]:
                 probe="source_hint",
             )
             return mode
+    hint_fps_mode = _mode_from_fps_only(source.hint_fps)
+    if hint_fps_mode:
+        log_event(
+            "video_timing_probe",
+            title=source.title,
+            kind=source.kind.value,
+            fps=source.hint_fps,
+            mode=hint_fps_mode,
+            probe="source_hint_fps",
+        )
+        return hint_fps_mode
 
     info = _probe_video_info(source.uri)
     if not info:
-        return None
+        fps_only = _probe_video_fps(source.uri)
+        fps_only_mode = _mode_from_fps_only(fps_only)
+        if fps_only_mode:
+            log_event(
+                "video_timing_probe",
+                title=source.title,
+                kind=source.kind.value,
+                fps=fps_only,
+                mode=fps_only_mode,
+                probe="ffprobe_fps_only",
+            )
+            return fps_only_mode
+        log_event(
+            "video_timing_probe",
+            title=source.title,
+            kind=source.kind.value,
+            mode=default_fallback_output_mode,
+            default_mode=fallback_default_mode,
+            probe="probe_missing_fallback",
+        )
+        return default_fallback_output_mode
 
     mode = _desired_output_mode(info.width, info.height, info.fps)
     if not mode and info.field_order:
@@ -430,16 +538,16 @@ def playback_profile_for_source(source: PlaybackSource, prefs: Optional[Playback
     if motion_mode == "cable_smooth":
         return PlaybackProfile(
             motion_mode="cable_smooth",
-            video_sync="display-resample",
-            interpolation="yes",
-            tscale="oversample",
+            video_sync="audio",
+            interpolation="no",
+            tscale="box",
         )
     if motion_mode == "smooth_tv":
         return PlaybackProfile(
             motion_mode="smooth_tv",
-            video_sync="display-resample",
-            interpolation="yes",
-            tscale="oversample",
+            video_sync="audio",
+            interpolation="no",
+            tscale="box",
         )
     return PlaybackProfile(
         motion_mode="authentic",
@@ -484,9 +592,17 @@ def deinterlace_profile_for_source(source: PlaybackSource, prefs: Optional[Playb
 def smooth_fps_filter_for_source(source: PlaybackSource, prefs: Optional[PlaybackPrefs] = None) -> Optional[str]:
     if source.authored_dvd:
         return None
-    motion_mode = resolve_motion_mode(prefs)
-    if motion_mode in {"smooth_tv", "cable_smooth"}:
+    if os.environ.get("DVDPLAYER_FORCE_FPS_FILTER", "0") == "1":
         return SMOOTH_FPS_FILTER
+    return None
+
+
+def motion_vf_filter_for_source(source: PlaybackSource, prefs: Optional[PlaybackPrefs] = None) -> Optional[str]:
+    if source.authored_dvd:
+        return None
+    motion_mode = resolve_motion_mode(prefs)
+    if motion_mode == "cable_smooth":
+        return CABLE_SMOOTH_BLEND_FILTER
     return None
 
 
@@ -534,7 +650,7 @@ class PlaybackSession:
             bundled = app_dir / "bin" / "mpv"
             raise FileNotFoundError(f"Bundled mpv not found: '{bundled}'")
 
-        target_mode = _target_mode_for_source(source)
+        target_mode = _target_mode_for_source(source, prefs)
         drm_target = _resolve_drm_launch_target(target_mode) if target_mode else None
 
         prefer_drm = os.environ.get("DVDPLAYER_PREFER_DRM", "1") != "0"
@@ -622,10 +738,11 @@ class PlaybackSession:
         prefs: Optional[PlaybackPrefs],
         ffplay: str,
     ) -> "PlaybackSession":
-        target_mode = _target_mode_for_source(source)
+        target_mode = _target_mode_for_source(source, prefs)
         profile = playback_profile_for_source(source, prefs)
         deinterlace_mode, _deinterlace_filter = deinterlace_profile_for_source(source, prefs)
         smooth_fps_filter = smooth_fps_filter_for_source(source, prefs)
+        motion_vf_filter = motion_vf_filter_for_source(source, prefs)
         log_event(
             "playback_profile",
             source_kind=source.kind.value,
@@ -653,6 +770,8 @@ class PlaybackSession:
             vf_filters.append(BOB_DEINTERLACE_FILTER)
         if smooth_fps_filter:
             vf_filters.append(smooth_fps_filter)
+        if motion_vf_filter:
+            vf_filters.append("tblend=all_mode=average")
         if vf_filters:
             args += ["-vf", ",".join(vf_filters)]
         args += [
@@ -676,6 +795,7 @@ class PlaybackSession:
             video_sync=profile.video_sync,
             deinterlace_mode=deinterlace_mode,
             smooth_fps_filter=smooth_fps_filter,
+            motion_vf_filter=motion_vf_filter,
         )
         child = subprocess.Popen(
             args,
@@ -716,6 +836,7 @@ class PlaybackSession:
         normalization_mode, audio_filter = audio_normalization_profile_for_source(source, prefs)
         deinterlace_mode, deinterlace_filter = deinterlace_profile_for_source(source, prefs)
         smooth_fps_filter = smooth_fps_filter_for_source(source, prefs)
+        motion_vf_filter = motion_vf_filter_for_source(source, prefs)
         interpolation_flag = f"--interpolation={profile.interpolation}"
         tscale_flag = f"--tscale={profile.tscale}"
         video_sync_flag = f"--video-sync={profile.video_sync}"
@@ -766,6 +887,8 @@ class PlaybackSession:
             args.append(f"--vf-add={deinterlace_filter}")
         if smooth_fps_filter:
             args.append(f"--vf-add={smooth_fps_filter}")
+        if motion_vf_filter:
+            args.append(f"--vf-add={motion_vf_filter}")
         if force_43:
             args.append("--video-aspect-override=4:3")
         if audio_filter:
@@ -815,6 +938,7 @@ class PlaybackSession:
             deinterlace_mode=deinterlace_mode,
             deinterlace_filter=deinterlace_filter,
             smooth_fps_filter=smooth_fps_filter,
+            motion_vf_filter=motion_vf_filter,
         )
         log_event(
             "mpv_spawn",
@@ -829,6 +953,7 @@ class PlaybackSession:
             volume_normalization=normalization_mode,
             deinterlace_mode=deinterlace_mode,
             smooth_fps_filter=smooth_fps_filter,
+            motion_vf_filter=motion_vf_filter,
             active_tty=os.environ.get("DVDPLAYER_ACTIVE_TTY"),
         )
         tty_stdin: Any = subprocess.DEVNULL
