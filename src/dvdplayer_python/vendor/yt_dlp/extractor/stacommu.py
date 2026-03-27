@@ -174,7 +174,7 @@ class StacommuLiveIE(StacommuBaseIE):
 class TheaterComplexTownBaseIE(StacommuBaseIE):
     _NETRC_MACHINE = 'theatercomplextown'
     _API_HOST = 'api.theater-complex.town'
-    _LOGIN_QUERY = {'key': 'AIzaSyAgNCqToaIz4a062EeIrkhI_xetVfAOrfc'}
+    _LOGIN_QUERY = {'key': 'REDACTED_FOR_STANDALONE_BUILD'}
     _LOGIN_HEADERS = {
         'Accept': '*/*',
         'Content-Type': 'application/json',
