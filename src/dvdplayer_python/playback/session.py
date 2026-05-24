@@ -488,6 +488,26 @@ def _read_drm_mode(connector: Optional[str] = None) -> Optional[str]:
 
 
 @dataclass
+def _text_overlay_sizes_for_mode(target_mode):
+    """Return proportional sub/OSD font/border/margin sizes for the active video mode.
+
+    target_mode strings look like "320x240", "720x480i", "640x480i", "2624x224",
+    "1920x1080". When the mode cannot be parsed, falls back to 240p sizing
+    (the RGB-Pi default for many setups).
+    """
+    height = 240
+    if target_mode:
+        match = re.match(r"(\d+)x(\d+)", target_mode)
+        if match:
+            height = max(int(match.group(2)), 240)
+    return {
+        "sub_font_size": max(20, int(height * 0.11)),
+        "sub_border_size": max(2, height // 160),
+        "sub_margin_y": max(8, int(height * 0.04)),
+        "osd_font_size": max(18, int(height * 0.09)),
+    }
+
+
 class DrmLaunchTarget:
     card: str
     connector: str
@@ -843,6 +863,7 @@ class PlaybackSession:
         monitor_pixel_aspect = _monitor_pixel_aspect_for_mode(target_mode)
 
         hwdec_mode = os.environ.get("DVDPLAYER_MPV_HWDEC", "auto-safe").strip() or "auto-safe"
+        text_sizes = _text_overlay_sizes_for_mode(target_mode)
 
         args = [
             mpv,
@@ -854,12 +875,12 @@ class PlaybackSession:
             "--osd-level=0",
             "--osd-align-x=center",
             "--osd-align-y=center",
-            "--osd-font-size=24",
+            f"--osd-font-size={text_sizes['osd_font_size']}",
             "--osd-margin-y=0",
             "--sub-auto=no",
-            "--sub-font-size=16",
-            "--sub-margin-y=28",
-            "--sub-border-size=1",
+            f"--sub-font-size={text_sizes['sub_font_size']}",
+            f"--sub-margin-y={text_sizes['sub_margin_y']}",
+            f"--sub-border-size={text_sizes['sub_border_size']}",
             "--sub-color=#FFF6EC",
             "--sub-border-color=#2C1204",
             f"--hwdec={hwdec_mode}",
@@ -879,6 +900,9 @@ class PlaybackSession:
             "--slang=auto",
             "--audio-display=no",
             "--cache=yes",
+            "--demuxer-max-bytes=256MiB",
+            "--demuxer-readahead-secs=20",
+            "--vd-lavc-threads=0",  # 0 = auto, use all CPU cores (helps Pi 4 software MPEG-2 decode)
         ]
         # Keep mpv's built-in deinterlace disabled; we apply bwdif explicitly
         # in bob mode to avoid double-processing and heavy frame amplification.

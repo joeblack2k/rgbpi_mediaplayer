@@ -36,7 +36,10 @@ gamepad to open the playback overlay menu. Available entries (vary by source):
   when available). UP/DOWN to navigate, ACCEPT to switch.
 - **ENABLE SUBTITLES** — opens a sub-menu with OFF + each available subtitle
   track. UP/DOWN to navigate, ACCEPT to set.
-- **INFORMATION** — overlay with current playback info.
+- **INFORMATION** — overlay with current playback info. The `VIDEO RESOLUTION`
+  field shows the file's storage resolution; when mpv's display resolution
+  differs (typically DVD NTSC 720x480 played as 720x540 after pixel aspect
+  ratio correction), the corrected size is shown in parentheses.
 - **RETURN TO BROWSER** — stop playback and go back to the file/library list.
 
 Within a sub-menu (audio / subtitles), press **BACK / SELECT / START** to close
@@ -45,6 +48,23 @@ and return to playback.
 When a file starts with multiple audio tracks, the player asks once which audio
 track to use. That choice is remembered for the current app session so the next
 episode can start with the same language automatically.
+
+### Overlay text scaling
+
+Subtitle and on-screen-display font sizes, border thickness and margins are
+computed proportionally to the active video mode height. The same code gives
+readable text on a 240p CRT as well as on a 1080p TV without any manual tweak
+(roughly 11 % of the mode height for subtitles, 9 % for OSD).
+
+## Performance notes
+
+- `--vd-lavc-threads=0` lets ffmpeg pick its own thread count. This matters on
+  Pi 4 since MPEG-2 isn't hardware-accelerated on this SoC (V4L2M2M on Pi 4
+  covers H.264 / HEVC only) — multi-thread software decode keeps a single
+  MPEG-2 stream from saturating one CPU core during playback.
+- `--cache=yes --demuxer-max-bytes=256MiB --demuxer-readahead-secs=20` keep
+  ~20 seconds of demuxer headroom; useful when streaming MKV / MP4 from a
+  Plex / SMB server with bursty network.
 
 ## Runtime files
 
